@@ -1,0 +1,354 @@
+---
+title: "Final_Project_Blankenship_Tessa"
+author: "Tessa Blankenship"
+date: "July 14, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+
+## Load and Clean Data
+
+Obtained Hospital readmissions data from Kaggle "https://www.kaggle.com/dansbecker/hospital-readmissions".
+
+```{r}
+library(tidyverse)
+library(gridExtra)
+library(caret)
+library(partykit)
+library(rpart)
+library(rpart.plot)
+library(e1071)
+library(arules)
+library(arulesViz)
+
+ReadmitData <- read.csv("C:/Users/tessa/OneDrive/School/IST 565/Hospital Readmit Data.csv")
+
+ReadmitData$readmitted <- as.factor(ReadmitData$readmitted)
+
+summary(ReadmitData)
+
+```
+
+```{r}
+r1 <-ReadmitData %>%
+  ggplot(aes(x=time_in_hospital, color=readmitted)) +
+  geom_density() +
+  theme_minimal() +
+  labs(x="Time in Hosptial", y= "Density") +
+  ggtitle("Readmission and Time in Hopsital")
+
+r2 <-ReadmitData %>%
+  ggplot(aes(x=num_lab_procedures,  color=readmitted)) +
+  geom_density() +
+  theme_minimal() +
+  labs(x="Labs", y= "Density") +
+  ggtitle("Readmission and Number of Labs")
+
+r3 <-ReadmitData %>%
+  ggplot(aes(x=num_procedures,  color=readmitted)) +
+  geom_density() +
+  theme_minimal() +
+  labs(x="Procedures", y= "Density") +
+  ggtitle("Readmission and Number of Procedures")
+
+r4 <-ReadmitData %>%
+  ggplot(aes(x=num_medications, color=readmitted)) +
+  geom_density() +
+  theme_minimal() +
+  labs(x="Medications", y= "Density") +
+  ggtitle("Readmission and Number of Medications")
+
+grid.arrange(r1,r2,r3,r4, ncol =2)
+```
+```{r}
+library(psych)
+pairs.panels(ReadmitData[c("time_in_hospital", "num_lab_procedures", "num_procedures", "num_medications","number_outpatient", "number_emergency", "number_inpatient", "number_diagnoses", "readmitted")])
+```
+
+
+##Create Training and Testing
+```{r}
+set.seed(77)
+
+## Normalize the values... then group by readmitted or not to make sure that the distribution of readmittion is equal.
+normalize <- function(x){
+   return((x- min(x)) / (max(x)- min(x)))
+}
+
+ReadmitDataNorm <- ReadmitData %>%
+  mutate_if(is.numeric, normalize) ##%>%
+##  mutate_if(is.numeric, funs(discretize(., method = "cluster", breaks = 5)))
+
+
+Readmit_Train <- ReadmitDataNorm  %>% 
+  rownames_to_column() %>%
+  group_by(readmitted) %>%
+  sample_frac(0.8) %>%
+  ungroup()
+  
+Readmit_Test <- ReadmitDataNorm %>%
+  rownames_to_column() %>%
+  anti_join(Readmit_Train, by = c("rowname"="rowname"))
+
+Readmit_Train <- Readmit_Train[,-1]
+Readmit_Test <- Readmit_Test[,-1]
+
+ReadmitDataNorm <- ReadmitDataNorm %>%
+  mutate(readmitfact = as.logical(if_else( as.integer(readmitted) > 1, "TRUE", "FALSE")))
+
+## Set up clusters
+ReadmitDataNormCat <- ReadmitDataNorm %>%
+  mutate_if(is.numeric, funs(discretize(., method = "cluster", breaks = 5)))
+  
+Readmit_TrainCat <- ReadmitDataNormCat  %>% 
+  rownames_to_column() %>%
+  group_by(readmitted) %>%
+  sample_frac(0.8) %>%
+  ungroup()
+  
+Readmit_TestCat <- ReadmitDataNormCat %>%
+  rownames_to_column() %>%
+  anti_join(Readmit_TrainCat, by = c("rowname"="rowname"))
+
+Readmit_TrainCat <- Readmit_TrainCat[,-1]
+Readmit_TestCat <- Readmit_TestCat[,-1]
+
+```
+
+```{r}
+ReadmitData
+ReadmitDataNorm
+ReadmitDataNormCat
+```
+## Exlpore Data
+
+```{r}
+library(randomForest)
+
+set.seed(77)
+trees <- randomForest(ReadmitDataNorm[, 1:64], ReadmitDataNorm$readmitted)
+
+trees
+
+varImpPlot(trees)
+
+importance(trees)
+
+```
+
+```{r}
+
+set.seed(77)
+treescat <- randomForest(ReadmitDataNormCat[, 1:64], ReadmitDataNormCat$readmitted)
+
+treescat
+
+varImpPlot(treescat)
+
+importance(treescat)
+```
+
+```{r}
+
+set.seed(77)
+treescut <- randomForest(ReadmitDataNorm[,c("time_in_hospital","num_lab_procedures","num_medications", "num_procedures","number_inpatient", "number_diagnoses", "number_outpatient", "number_emergency", "race_Caucasian", "gender_Female", "age_.70.80.","medical_specialty_.")], ReadmitDataNorm$readmitted)
+
+treescut
+
+varImpPlot(treescut)
+
+importance(treescut)
+
+```
+## Association Rules
+
+```{r}
+rules <- apriori(ReadmitDataNormCat[1:65], parameter = list(supp=0.001,conf=0.85),
+                 appearance = list(default="lhs", rhs="readmitted=1"),
+                 control = list(verbose=F))
+
+rules <- sort(rules,decreaseing = TRUE, by= c('confidence','lift','support'))
+
+inspect(rules[1:10])
+```
+
+```{r}
+plot(rules[1:5], method = "graph")
+```
+
+## Try Clusters
+```{r}
+##Test for Optimial Number of Clusters
+library(factoextra)
+set.seed(77)
+
+
+fviz_nbclust(ReadmitDataNorm[,-65],kmeans,method = "wss")
+```
+
+```{r}
+#Run K-Means Cluster Using 5 clusters
+set.seed(77)
+
+table(ReadmitDataNorm$readmitfact, ReadmitDataNorm$readmitted)
+
+km <- kmeans(ReadmitDataNorm[,-65], 5, nstart = 10)
+
+clusters <- ReadmitDataNorm %>%
+  mutate(cluster = as.factor(km$cluster))
+
+km
+
+clusters %>%
+  ggplot(aes(cluster, readmitfact, color = num_lab_procedures)) +
+  geom_jitter()
+
+```
+
+```{r}
+library(cluster)
+clusplot(ReadmitDataNorm[,-65],km$cluster, color=TRUE, shade=TRUE, labels=2, lines=0)
+```
+
+```{r}
+library(fpc)
+plotcluster(ReadmitDataNorm[,-65], km$cluster) 
+
+```
+
+## Try decision trees
+```{r}
+set.seed(77)
+
+rpart <- rpart(readmitfact~., data = ReadmitDataNorm[,-65], method = "class")
+
+rpart.plot(rpart, box.palette = "RdBu", shadow.col = "gray", nn= TRUE)
+
+```
+
+## Try SVM
+```{r}
+set.seed(77)
+svm_linear <- svm(readmitfact~.,data = Readmit_TrainCat[,-65], type = "C-classification", kernel= "linear")
+
+svm_linear
+
+svm_linear_pred <- predict(svm_linear, Readmit_TestCat[,-65])
+
+confusionMatrix(data = svm_linear_pred, reference = as.factor(Readmit_TestCat$readmitfact))
+
+```
+
+## Try SVM Cut
+```{r}
+set.seed(77)
+svm_linear2 <- svm(readmitfact~.,data = Readmit_TrainCat[,c("time_in_hospital","num_lab_procedures","num_medications", "num_procedures","number_inpatient", "number_diagnoses", "number_outpatient", "number_emergency","gender_Female","readmitfact")], type = "C-classification", kernel= "linear")
+
+svm_linear2
+
+svm_linear_pred2 <- predict(svm_linear2, Readmit_TestCat[,c("time_in_hospital","num_lab_procedures","num_medications", "num_procedures","number_inpatient", "number_diagnoses", "number_outpatient", "number_emergency", "gender_Female")])
+
+confusionMatrix(data = svm_linear_pred2, reference = as.factor(Readmit_TestCat$readmitfact))
+
+```
+
+```{r}
+set.seed(77)
+svm_poly <- svm(readmitfact~.,data = Readmit_TrainCat[,-65], type = "C-classification", kernel= "polynomial")
+
+svm_poly
+
+svm_poly_pred <- predict(svm_poly, Readmit_TestCat[,-65])
+
+confusionMatrix(data = svm_poly_pred, reference = as.factor(Readmit_TestCat$readmitfact))
+
+```
+
+```{r}
+set.seed(77)
+svm_radial <- svm(readmitfact~.,data = Readmit_TrainCat[,-65], type = "C-classification", kernel= "radial")
+
+svm_radial
+
+svm_radial_pred <- predict(svm_radial, Readmit_TestCat[,-65])
+
+confusionMatrix(data = svm_radial_pred, reference = as.factor(Readmit_TestCat$readmitfact))
+
+```
+
+## Naive Bayes
+```{r}
+set.seed(77)
+
+nb <- naiveBayes(readmitfact~., data = Readmit_TrainCat[,-65])
+
+nbPred <- predict(nb, newdata = Readmit_TestCat[,-65], type = c("class"))
+
+table(nbPred, Readmit_TestCat$readmitfact)
+
+confusionMatrix(data = as.factor(nbPred), reference = as.factor(Readmit_TestCat$readmitfact))
+
+```
+## Naive Bayes Cut
+```{r}
+set.seed(77)
+
+nb2 <- naiveBayes(readmitfact~., data = Readmit_TrainCat[,c("time_in_hospital","num_lab_procedures","num_medications", "num_procedures","number_inpatient", "number_diagnoses", "number_outpatient", "number_emergency","gender_Female","readmitfact")])
+
+nbPred2 <- predict(nb2, newdata = Readmit_TestCat[,c("time_in_hospital","num_lab_procedures","num_medications", "num_procedures","number_inpatient", "number_diagnoses", "number_outpatient", "number_emergency","gender_Female")], type = c("class"))
+
+table(nbPred2, Readmit_TestCat$readmitfact)
+
+confusionMatrix(data = as.factor(nbPred2), reference = as.factor(Readmit_TestCat$readmitfact))
+
+```
+
+## KNN
+```{r}
+library(class)
+
+knmodel <- knn(train = as.matrix( Readmit_Train[,-65]), test = as.matrix(Readmit_Test[,-65]), cl = Readmit_Train$readmitted, k = 141)
+
+confusionMatrix(knmodel,  reference = Readmit_Test$readmitted)
+
+```
+## KNN Cut
+```{r}
+
+knmodel2 <- knn(train = as.matrix( Readmit_Train[,c("time_in_hospital","num_lab_procedures","num_medications", "num_procedures","number_inpatient", "number_diagnoses", "number_outpatient", "number_emergency","gender_Female")]), test = as.matrix(Readmit_Test[,c("time_in_hospital","num_lab_procedures","num_medications", "num_procedures","number_inpatient", "number_diagnoses", "number_outpatient", "number_emergency","gender_Female")]), cl = Readmit_Train$readmitted, k = 141)
+
+confusionMatrix(knmodel2, reference = Readmit_Test$readmitted)
+
+```
+## Logistic Regression
+
+```{r}
+set.seed(77)
+
+logreg <- glm(readmitted~., data = Readmit_Train, family = binomial)
+
+predictlog <- predict(logreg, newdata = Readmit_Test)
+
+predictlog2 <- if_else(predictlog <.5, 0, 1)
+
+confusionMatrix(as.factor(predictlog2), reference = Readmit_Test$readmitted)
+
+```
+## Logistic Regression Cut
+
+```{r}
+set.seed(77)
+
+logregC <- glm(readmitted~., data = Readmit_Train[,c("time_in_hospital","num_lab_procedures","num_medications", "num_procedures","number_inpatient", "number_diagnoses", "number_outpatient", "number_emergency","gender_Female","readmitted")], family = binomial)
+
+predictlogC <- predict(logregC, newdata = Readmit_Test[,c("time_in_hospital","num_lab_procedures","num_medications", "num_procedures","number_inpatient", "number_diagnoses", "number_outpatient", "number_emergency","gender_Female")])
+
+predictlogC2 <- if_else(predictlogC <.5, 0, 1)
+
+confusionMatrix(as.factor(predictlogC2), reference = Readmit_Test$readmitted)
+
+```
